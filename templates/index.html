@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Godrej Fastener Detection</title>
+<link rel="icon" href="{{ url_for('static', filename='assets/favicon.ico') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/stations.css') }}">
+</head>
+<body>
+<div class="bg-orbs"><i></i><i></i></div>
+
+<header class="nav">
+  <div class="brand">
+    <img src="{{ url_for('static', filename='assets/Godrej_Logo1.jpg') }}" alt="Godrej" class="logo">
+    <span class="divider"></span>
+    <div><b>Fastener Detection</b><small>Multi-Station AI Inspection</small></div>
+  </div>
+  <div class="nav-right">
+    <span class="pill" id="livePill"><i class="dot"></i><span id="liveText">LIVE</span></span>
+    <span class="pill ghost" id="fpsPill"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg><span id="fps">0</span> FPS</span>
+    <a class="pill ghost" href="/history">History</a>
+    <span class="pill ghost" id="clock">--:--:--</span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="overall wait" id="overall">
+    <div class="ov-main">
+      <small>OVERALL INSPECTION RESULT</small>
+      <h1 id="ovLabel">OVERALL WAITING</h1>
+      <p id="ovReason">Starting up…</p>
+    </div>
+    <div class="ov-stats">
+      <span><b id="kEnabled">0</b>Enabled</span>
+      <span class="g"><b id="kPass">0</b>Pass</span>
+      <span class="r"><b id="kFail">0</b>Fail</span>
+      <span class="a"><b id="kWait">0</b>Waiting</span>
+      <span class="p"><b id="kErr">0</b>Cam error</span>
+    </div>
+  </section>
+
+  <div class="warnbar" id="warnBar"></div>
+
+  <section class="toolbar">
+    <button class="btn primary" id="btnStartAll"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>Start all enabled</button>
+    <button class="btn" id="btnStopAll"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop all</button>
+    <button class="btn ghost" id="btnScan"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>Scan cameras</button>
+    <span class="scan-note" id="scanNote"></span>
+    <label class="snd"><input type="checkbox" id="sndOn" checked> Sound alert</label>
+  </section>
+
+  <section class="sgrid" id="stationGrid"></section>
+
+  <section class="bottom">
+    <details class="panel camp" id="camPanel">
+      <summary><h4>Camera &amp; Image (all stations)</h4><span class="exp ok">settings</span></summary>
+      <div class="cam-grid">
+        <label>Resolution<select id="camRes"><option value="640x480">640 × 480</option><option value="1280x720">HD 1280 × 720</option><option value="1280x960">HD 4:3 1280 × 960</option><option value="1920x1080">Full HD 1920 × 1080</option></select></label>
+        <label>Frame rate<select id="camFps"><option value="15">15 FPS</option><option value="30">30 FPS</option><option value="60">60 FPS</option></select></label>
+        <label>Driver<select id="camDrv"><option value="auto">Auto</option><option value="dshow">DirectShow</option><option value="msmf">Media Foundation</option></select></label>
+      </div>
+      <small class="hint">Resolution / frame rate / driver restart the running cameras. Four cameras at Full HD is heavy on USB and CPU - HD 1280 × 720 is recommended.</small>
+      <div class="sl"><span>Highlight recovery (gamma) <b id="vGamma">1.0</b></span><input type="range" id="swGamma" min="0.4" max="3" step="0.05" value="1"></div>
+      <div class="sl"><span>Brightness <b id="vBri">0</b></span><input type="range" id="swBri" min="-100" max="100" step="1" value="0"></div>
+      <div class="sl"><span>Contrast <b id="vCon">1.0</b></span><input type="range" id="swCon" min="0.5" max="2" step="0.05" value="1"></div>
+      <label class="chk"><input type="checkbox" id="swEnh"> Enhance bolt edges (local contrast)</label>
+      <button class="btn ghost wide" id="btnCamReset">Reset image settings</button>
+    </details>
+    <div class="panel grow">
+      <div class="p-head"><h4>Event Timeline</h4></div>
+      <ul class="timeline" id="timeline"><li class="empty">No events yet</li></ul>
+    </div>
+  </section>
+
+  <footer>© Godrej &amp; Boyce · Developed By : Devashish Niphade · Powered by YOLO</footer>
+</main>
+<div class="toast" id="toast"></div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/anim.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stations.js') }}"></script>
+</body>
+</html>

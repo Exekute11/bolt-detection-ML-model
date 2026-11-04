@@ -1,0 +1,67 @@
+{
+  "cycle": {
+    "enabled": false,
+    "duration": 10,
+    "min_present": 1,
+    "grace": 2.0
+  },
+  "detection": {
+    "conf": 0.3,
+    "iou": 0.5,
+    "imgsz": null,
+    "count_all_boxes": true,
+    "collect_samples": false,
+    "tracker": "bytetrack.yaml",
+    "class_labels": {
+      "boulon_bon": "Bolt",
+      "boulon": "Bolt"
+    },
+    "show_id": false,
+    "count_smooth": 3,
+    "min_box_area_pct": 0.0,
+    "max_box_area_pct": 100.0,
+    "roi": [
+      0.0172,
+      0.0222,
+      1.0,
+      0.9405
+    ],
+    "device": null
+  },
+  "camera": {
+    "zoom": null,
+    "index": 1,
+    "backend": "auto",
+    "display_width": 1920,
+    "jpeg_quality": 85,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "auto_exposure": true,
+    "exposure": -6,
+    "autofocus": true,
+    "focus": 0,
+    "sw_brightness": 0,
+    "sw_contrast": 1.0,
+    "sw_gamma": 1.0,
+    "sw_enhance": true
+  },
+  "camera_modes": {
+    "1|1280x720@30": [
+      640,
+      480,
+      30,
+      "dshow"
+    ],
+    "1|1920x1080@30": [
+      1280,
+      720,
+      30,
+      "dshow"
+    ]
+  },
+  "parts": {
+    "XYZ": 6
+  },
+  "active_part": null
+}

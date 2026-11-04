@@ -1,0 +1,108 @@
+{
+  "detection": {
+    "iou": 0.5,
+    "imgsz": 416,
+    "device": null,
+    "min_box_area_pct": 0.0,
+    "max_box_area_pct": 100.0,
+    "class_labels": {
+      "hex_bolt": "Hex Bolt"
+    },
+    "dedupe_iou": 0.6
+  },
+  "camera": {
+    "zoom": null,
+    "backend": "auto",
+    "display_width": 960,
+    "jpeg_quality": 80,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "auto_exposure": true,
+    "exposure": -6,
+    "autofocus": true,
+    "focus": 0,
+    "sw_brightness": 0,
+    "sw_contrast": 1.0,
+    "sw_gamma": 1.0,
+    "sw_enhance": false
+  },
+  "camera_modes": {
+    "1|1280x720@30": [
+      640,
+      480,
+      30,
+      "dshow"
+    ],
+    "1|1920x1080@30": [
+      1280,
+      720,
+      30,
+      "dshow"
+    ],
+    "0|1280x720@30": [
+      640,
+      480,
+      30,
+      "dshow"
+    ]
+  },
+  "autostart": true,
+  "stations": [
+    {
+      "id": 1,
+      "enabled": true,
+      "name": "Front Shield",
+      "camera": 0,
+      "reference": 1,
+      "conf": 0.35,
+      "smooth": 2,
+      "roi": null
+    },
+    {
+      "id": 2,
+      "enabled": true,
+      "name": "End Shield",
+      "camera": 1,
+      "reference": 5,
+      "conf": 0.5,
+      "smooth": 2,
+      "roi": [
+        0.3933,
+        0.3161,
+        0.6734,
+        0.7023
+      ]
+    },
+    {
+      "id": 3,
+      "enabled": false,
+      "name": "Inspection 3",
+      "camera": 2,
+      "reference": 0,
+      "conf": 0.35,
+      "smooth": 5,
+      "roi": null
+    },
+    {
+      "id": 4,
+      "enabled": false,
+      "name": "Inspection 4",
+      "camera": 3,
+      "reference": 0,
+      "conf": 0.35,
+      "smooth": 5,
+      "roi": null
+    }
+  ],
+  "parts": {
+    "XYZ": 6
+  },
+  "active_part": null,
+  "cycle": {
+    "enabled": false,
+    "duration": 10,
+    "min_present": 1,
+    "grace": 2.0
+  }
+}
