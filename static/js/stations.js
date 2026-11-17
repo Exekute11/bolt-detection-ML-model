@@ -30,8 +30,9 @@
       <div class="sc-stage">
         <img class="sc-img" alt="Station ${s.id} live feed">
         <div class="sc-ov"><b></b><small></small></div>
-        <div class="zone-layer"><div class="zone-hint">Drag around the area that detections should ignore · Esc cancels</div><div class="zone-rect"></div></div>
+        <div class="zone-layer"><div class="zone-hint">Drag to add an exclusion zone · draw as many as needed · Esc / Done to finish</div><div class="zone-rect"></div><button class="btn zone-done">Done</button></div>
       </div>
+      <div class="zone-list"></div>
       <div class="sc-metrics">
         <div class="sm"><span>Detected</span><b class="m-det">--</b></div>
         <div class="sm"><span>Reference</span><input type="number" class="sc-ref" min="0" max="999"></div>
@@ -47,8 +48,9 @@
       <div class="sc-btns">
         <button class="btn primary b-start"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>Start</button>
         <button class="btn b-stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop</button>
-        <button class="btn ghost b-zone">Draw Exclusion Zone</button>
-        <button class="btn ghost b-zoneclr">Clear Exclusion Zone</button>
+        <button class="btn ghost b-zone">Add Exclusion Zone</button>
+        <button class="btn ghost b-zoneundo">Undo Last Zone</button>
+        <button class="btn ghost b-zoneclr">Clear All Zones</button>
         <button class="btn ghost b-fs">Fullscreen</button>
         <span class="sc-fps"></span>
       </div>`;
@@ -57,7 +59,7 @@
     const c = { el, id: s.id, img: q('.sc-img'), ov: q('.sc-ov'), stage: q('.sc-stage'), layer: q('.zone-layer'), rect: q('.zone-rect'),
       name: q('.sc-name'), en: q('.sc-en'), badge: q('.sbadge'), det: q('.m-det'), ref: q('.sc-ref'), miss: q('.m-miss'), extra: q('.m-extra'),
       msg: q('.sc-msg'), cam: q('.sc-cam'), conf: q('.sc-conf'), confv: q('.sc-confv'), smooth: q('.sc-smooth'),
-      start: q('.b-start'), stop: q('.b-stop'), zone: q('.b-zone'), zoneclr: q('.b-zoneclr'), fps: q('.sc-fps'), gen: -1 };
+      start: q('.b-start'), stop: q('.b-stop'), zone: q('.b-zone'), zoneundo: q('.b-zoneundo'), zoneclr: q('.b-zoneclr'), zdone: q('.zone-done'), zlist: q('.zone-list'), zones: [], fps: q('.sc-fps'), gen: -1 };
     cards[s.id] = c;
     c.cam.innerHTML = camOptions();
     wire(c);
@@ -95,36 +97,38 @@
     const norm = e => { const r = c.stage.getBoundingClientRect();
       return { x: Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), y: Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1) }; };
     const end = () => { c.layer.classList.remove('on'); c.rect.style.display = 'none'; drawing = false; st = null; };
+    const sv = (zones, msg) => save(c, { zones }, msg);
     c.zone.onclick = () => {
-  c.layer.classList.add('on');
-  toast(`Draw the exclusion zone for ${c.name.value}`);
-};
-
-c.zoneclr.onclick = () => {
-  save(c, { roi: null }, 'Exclusion zone cleared');
-};
-    c.layer.onpointerdown = e => { st = norm(e); drawing = true; c.rect.style.display = 'block'; c.layer.setPointerCapture(e.pointerId); e.preventDefault(); };
+      c.layer.classList.add('on');
+      toast(`Draw exclusion zones for ${c.name.value} - repeat for each, then press Done`);
+    };
+    c.zdone.onpointerdown = e => e.stopPropagation();
+    c.zdone.onclick = e => { e.stopPropagation(); end(); };
+    c.zoneundo.onclick = () => sv(c.zones.slice(0, -1), 'Last exclusion zone removed');
+    c.zoneclr.onclick = () => sv([], 'All exclusion zones cleared');
+    c.zlist.onclick = e => {
+      const b = e.target.closest('[data-i]'); if (!b) return;
+      sv(c.zones.filter((_, i) => i !== +b.dataset.i), `Exclusion zone ${+b.dataset.i + 1} removed`);
+    };
+    c.layer.onpointerdown = e => { if (e.target !== c.layer) return; st = norm(e); drawing = true; c.rect.style.display = 'block';
+      Object.assign(c.rect.style, { left: st.x * 100 + '%', top: st.y * 100 + '%', width: '0%', height: '0%' });
+      c.layer.setPointerCapture(e.pointerId); e.preventDefault(); };
     c.layer.onpointermove = e => {
       if (!drawing) return; const p = norm(e);
       Object.assign(c.rect.style, { left: Math.min(st.x, p.x) * 100 + '%', top: Math.min(st.y, p.y) * 100 + '%',
         width: Math.abs(p.x - st.x) * 100 + '%', height: Math.abs(p.y - st.y) * 100 + '%' });
     };
     c.layer.onpointerup = e => {
-      if (!drawing) return; const p = norm(e), s0 = st; end();
-      save(
-  c,
-  {
-    roi: {
-      x1: s0.x,
-      y1: s0.y,
-      x2: p.x,
-      y2: p.y
-    }
-  },
-  'Exclusion zone saved for ' + c.name.value
-);
+      if (!drawing) return; const p = norm(e), s0 = st;
+      drawing = false; st = null; c.rect.style.display = 'none';      /* stay in draw mode for the next zone */
+      if (Math.abs(p.x - s0.x) < 0.01 || Math.abs(p.y - s0.y) < 0.01) return;   /* ignore stray clicks */
+      const zones = c.zones.concat([[s0.x, s0.y, p.x, p.y]]);
+      c.zones = zones;                                                 /* optimistic, so rapid draws don't overwrite each other */
+      sv(zones, `Exclusion zone ${zones.length} saved for ${c.name.value}`);
     };
+    c.layer.onpointercancel = () => { drawing = false; st = null; c.rect.style.display = 'none'; };
     document.addEventListener('keydown', e => { if (e.key === 'Escape') end(); });
+    c.end = end;
   }
 
   const idle = el => document.activeElement !== el;
@@ -149,8 +153,17 @@ c.zoneclr.onclick = () => {
     c.msg.textContent = s.message;
     c.start.disabled = !s.enabled || s.running;
     c.stop.disabled = !s.running;
-    c.zone.classList.toggle('on', !!s.roi);
-    c.zoneclr.disabled = !s.roi;
+    const zs = s.zones || [];
+    c.zones = zs;
+    c.zone.classList.toggle('on', zs.length > 0);
+    c.zone.textContent = zs.length ? `Add Exclusion Zone (${zs.length})` : 'Add Exclusion Zone';
+    c.zoneundo.disabled = !zs.length;
+    c.zoneclr.disabled = !zs.length;
+    const zk = JSON.stringify(zs);
+    if (c.zlist.dataset.k !== zk) {
+      c.zlist.dataset.k = zk;
+      c.zlist.innerHTML = zs.map((_, i) => `<span class="zchip">Zone ${i + 1}<button data-i="${i}" title="Remove zone ${i + 1}">×</button></span>`).join('');
+    }
     c.fps.textContent = s.running ? `cam ${s.fps} fps · AI ${s.det_fps} fps` : '';
     if (s.frame_w && s.frame_h) {
       const ar = s.frame_w + ' / ' + s.frame_h;

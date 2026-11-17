@@ -25,8 +25,7 @@ import sys
 import threading
 import time
 import traceback
-from collections import deque
-
+from collections import Counter, deque
 import cv2
 import numpy as np
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
@@ -41,7 +40,7 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)     # hide Flask request s
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAP_DIR = os.path.join(BASE_DIR, "snapshots")
 DB_PATH = os.path.join(BASE_DIR, "inspections.db")
-VIDEO_PATH = os.path.join(BASE_DIR, "videos", "demo.mp4")
+VIDEO_PATH = os.path.join(BASE_DIR, "videos", "Demo.mp4")
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 CAM_WORKER = os.path.join(BASE_DIR, "camera_worker.py")
 DEFAULT_MODEL = os.path.join(BASE_DIR, "models", "hex_bolt_best_openvino_model")
@@ -128,15 +127,18 @@ CAM_DEFAULTS = {"auto_exposure": True, "exposure": -6, "autofocus": True, "focus
                 "sw_brightness": 0, "sw_contrast": 1.0, "sw_gamma": 1.0, "sw_enhance": False}
 
 
+MAX_ZONES = 20          # max exclusion zones per station
+
+
 def default_stations():
     names = ["Front Shield", "End Shield", "Inspection 3", "Inspection 4"]
     refs, cams, en = [5, 6, 0, 0], [0, 1, 2, 3], [True, True, False, False]
     return [{"id": i + 1, "enabled": en[i], "name": names[i], "camera": cams[i], "reference": refs[i],
-             "conf": 0.35, "smooth": 5, "roi": None} for i in range(MAX_STATIONS)]
+             "conf": 0.35, "smooth": 5, "zones": []} for i in range(MAX_STATIONS)]
 
 
 settings = {
-    "detection": {"iou": 0.5, "imgsz": None, "device": None, "min_box_area_pct": 0.0, "max_box_area_pct": 100.0,
+    "detection": {"stability_window": 12, "stability_ratio": 0.70, "pass_hold_s": 1.0, "fail_hold_s": 3.0,"iou": 0.5, "imgsz": None, "device": None, "min_box_area_pct": 0.0, "max_box_area_pct": 100.0,
                   "class_labels": {"hex_bolt": "Hex Bolt"}, "dedupe_iou": 0.6},
     "camera": {"zoom": None, "backend": "auto", "display_width": 960, "jpeg_quality": 80,
                "width": 1280, "height": 720, "fps": 30, "auto_exposure": True, "exposure": -6,
@@ -190,21 +192,34 @@ def clean_station(patch):
             out["smooth"] = max(1, min(int(patch["smooth"]), 30))
         except (TypeError, ValueError):
             err.append("Smoothing must be a whole number 1-30")
-    if "roi" in patch:
-        r = patch["roi"]
-        if r is None or r is False:
-            out["roi"] = None
+    # Exclusion zones: a LIST of rectangles [x1, y1, x2, y2] (normalised 0..1).
+    # Legacy single "roi" patches are still accepted (None -> clear all, rect -> one zone).
+    if "roi" in patch and "zones" not in patch:
+        patch = dict(patch)
+        patch["zones"] = [] if (patch["roi"] is None or patch["roi"] is False) else [patch["roi"]]
+    if "zones" in patch:
+        zl = patch["zones"]
+        if zl is None or zl is False:
+            zl = []
+        if not isinstance(zl, (list, tuple)):
+            err.append("Exclusion zones must be a list")
         else:
-            try:
-                if isinstance(r, dict):
-                    r = [r["x1"], r["y1"], r["x2"], r["y2"]]
-                x1, y1, x2, y2 = [max(0.0, min(float(v), 1.0)) for v in r]
-                x1, x2, y1, y2 = min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
-                if x2 - x1 < 0.03 or y2 - y1 < 0.03:
-                    raise ValueError
-                out["roi"] = [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
-            except (KeyError, TypeError, ValueError):
-                err.append("Detection zone too small - draw a larger zone")
+            zones, bad = [], False
+            for r in zl[:MAX_ZONES]:
+                try:
+                    if isinstance(r, dict):
+                        r = [r["x1"], r["y1"], r["x2"], r["y2"]]
+                    x1, y1, x2, y2 = [max(0.0, min(float(v), 1.0)) for v in r]
+                    x1, x2, y1, y2 = min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
+                    if x2 - x1 < 0.01 or y2 - y1 < 0.01:
+                        raise ValueError
+                    zones.append([round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)])
+                except (KeyError, TypeError, ValueError):
+                    bad = True
+            if bad and not zones and zl:
+                err.append("Exclusion zone too small - draw a larger zone")
+            else:
+                out["zones"] = zones
     return out, err
 
 
@@ -233,6 +248,10 @@ def load_settings():
                 s["conf"] = round(float(old_conf), 2)
         for i, s in enumerate(saved.get("stations") or []):
             if i < MAX_STATIONS and isinstance(s, dict):
+                s = dict(s)
+                if "zones" not in s and s.get("roi"):      # migrate old single zone -> zones list
+                    s["zones"] = [s["roi"]]
+                s.pop("roi", None)
                 clean, _ = clean_station(s)
                 stations[i].update(clean)
         settings["stations"] = stations
@@ -368,10 +387,10 @@ def draw_overlay(img, d):
         left = p1[0] - lw // 2
         cv2.rectangle(img, (left, top), (left + bar_w, top + bar_h), BOX, -1)
         cv2.putText(img, label, (left + pad, top + bar_h - pad - base // 2), F, fs, TXT, ft, cv2.LINE_AA)
-    if d.get("roi"):
-        rx1, ry1, rx2, ry2 = d["roi"]
-        cv2.rectangle(img, (int(rx1 * w), int(ry1 * h)), (int(rx2 * w), int(ry2 * h)), (255, 255, 255), 1)
-        cv2.putText(img, "ZONE", (int(rx1 * w) + 6, int(ry1 * h) + int(18 * k)), F, 0.5 * k, (255, 255, 255), 1)
+    for zi, (rx1, ry1, rx2, ry2) in enumerate(d.get("zones") or [], 1):
+        zp1, zp2 = (int(rx1 * w), int(ry1 * h)), (int(rx2 * w), int(ry2 * h))
+        cv2.rectangle(img, zp1, zp2, (255, 255, 255), 1)
+        cv2.putText(img, f"EXCL {zi}", (zp1[0] + 6, zp1[1] + int(18 * k)), F, 0.5 * k, (255, 255, 255), 1)
     # header band: station name, counts, status
     band = int(34 * k)
     img[:band] = (img[:band] * 0.35 + np.array((30, 30, 30), np.float32) * 0.65).astype(np.uint8)
@@ -519,7 +538,7 @@ class VideoThread(threading.Thread):
     def run(self):
         cap = cv2.VideoCapture(VIDEO_PATH)
         if not cap.isOpened():
-            self.failed_msg = "Video file not found or unreadable: videos/demo.mp4"
+            self.failed_msg = "Video file not found or unreadable: videos/Demo.mp4"
             return
         native = cap.get(cv2.CAP_PROP_FPS)
         period = 1.0 / native if native and 1 < native < 120 else 0.04
@@ -581,7 +600,14 @@ class Station:
             self.frame_w = self.frame_h = 0
             self.boxes, self.raw_count, self.avg_conf = [], None, 0.0
             self.history = deque(maxlen=30)
+
+            # Last confirmed count shown on the dashboard and sent to PLC.
             self.stable_count = None
+
+            # Count currently waiting for confirmation.
+            self.candidate_count = None
+            self.candidate_since = None
+
             self.error = ""
             self.opening_msg = ""
             self.cam_fps = self.det_fps = 0.0
@@ -619,7 +645,7 @@ class Station:
             cfg = dict(self.cfg)
             return {"id": self.id, "station_id": self.id, "name": cfg["name"], "enabled": cfg["enabled"],
                     "camera": cfg["camera"], "reference": cfg["reference"], "conf": cfg["conf"],
-                    "smooth": cfg["smooth"], "roi": cfg["roi"], "running": self.running,
+                    "smooth": cfg["smooth"], "zones": cfg["zones"], "running": self.running,
                     "status": status, "message": msg, "error": self.error,
                     "detected": self.stable_count, "live_count": self.raw_count,
                     "missing": missing, "extra": extra,
@@ -632,7 +658,7 @@ class Station:
     def _overlay_state(self):
         with self.lock:
             status, _, _, _ = self._status_locked(time.time())
-            return {"boxes": list(self.boxes), "roi": self.cfg["roi"], "name": self.cfg["name"],
+            return {"boxes": list(self.boxes), "zones": list(self.cfg["zones"]), "name": self.cfg["name"],
                     "reference": self.cfg["reference"], "detected": self.stable_count, "status": status}
 
     # ---------------------------------------------------------------- frames
@@ -676,10 +702,81 @@ class Station:
             self.raw_count = len(boxes)
             self.avg_conf = round(100 * sum(confs) / len(confs), 1) if confs else 0.0
             self.history.append(self.raw_count)
-            k = max(1, int(self.cfg["smooth"]))
-            last = list(self.history)[-k:]
-            if len(last) >= k and len(set(last)) == 1:   # same count for k frames in a row = stable
-                self.stable_count = last[0]
+
+            det_cfg = settings["detection"]
+
+            window_size = max(
+                5,
+                int(det_cfg.get("stability_window", 12))
+            )
+
+            required_ratio = max(
+                0.50,
+                min(
+                    float(det_cfg.get("stability_ratio", 0.70)),
+                    1.0,
+                ),
+            )
+
+            recent_counts = list(self.history)[-window_size:]
+
+            # Do not make a decision until enough recent results exist.
+            minimum_samples = min(5, window_size)
+
+            if len(recent_counts) >= minimum_samples:
+                count_frequency = Counter(recent_counts)
+
+                # Most frequently detected count in the recent window.
+                candidate_count, candidate_frequency = max(
+                    count_frequency.items(),
+                    key=lambda item: (
+                        item[1],
+                        item[0],
+                    ),
+                )
+
+                agreement_ratio = (
+                    candidate_frequency
+                    / len(recent_counts)
+                )
+
+                if agreement_ratio >= required_ratio:
+                    if candidate_count == self.stable_count:
+                        # The confirmed count remains unchanged.
+                        self.candidate_count = None
+                        self.candidate_since = None
+
+                    else:
+                        # Begin or continue confirmation of a new count.
+                        if candidate_count != self.candidate_count:
+                            self.candidate_count = candidate_count
+                            self.candidate_since = now
+
+                        reference = int(self.cfg["reference"])
+
+                        # A matching count can be confirmed faster.
+                        # A FAIL needs longer confirmation to prevent false rejects.
+                        if candidate_count == reference:
+                            hold_seconds = float(
+                                det_cfg.get("pass_hold_s", 1.0)
+                            )
+                        else:
+                            hold_seconds = float(
+                                det_cfg.get("fail_hold_s", 3.0)
+                            )
+
+                        if (
+                            self.candidate_since is not None
+                            and now - self.candidate_since >= hold_seconds
+                        ):
+                            self.stable_count = candidate_count
+                            self.candidate_count = None
+                            self.candidate_since = None
+                else:
+                    # Counts are too inconsistent. Keep the last confirmed count
+                    # instead of flickering between PASS and FAIL.
+                    self.candidate_count = None
+                    self.candidate_since = None
             inst = 1 / max(now - self._t_det, 1e-3)
             self.det_fps = 0.85 * self.det_fps + 0.15 * inst if self.det_fps else inst
             self._t_det = now
@@ -807,6 +904,11 @@ class Station:
             with self.lock:
                 self.history.clear()
                 self.stable_count = None
+
+                # Clear any count that was waiting for confirmation.
+                self.candidate_count = None
+                self.candidate_since = None
+
                 self.last_frame_t = 0.0
                 self.frame = None
                 self.opening_msg = "Restarting camera..."
@@ -820,7 +922,12 @@ class Station:
             self.fail_count += 1
             self.next_retry = time.time() + min(5 * self.fail_count, 20)
             self.history.clear()
-            self.stable_count, self.boxes, self.raw_count = None, [], None
+            self.stable_count = None
+            self.candidate_count = None
+            self.candidate_since = None
+
+            self.boxes = []
+            self.raw_count = None
             self.last_reported = None
         if first:
             log_event("alert", f"{self.name}: CAMERA ERROR - {msg}")
@@ -862,10 +969,15 @@ class Station:
             old = dict(self.cfg)
             self.cfg.update(clean)
             new = dict(self.cfg)
-            if any(new[k] != old[k] for k in ("roi", "smooth", "conf", "reference")):
-                self.history.clear()                    # counts must be re-stabilised under the new settings
-                if any(new[k] != old[k] for k in ("roi", "smooth", "conf")):
-                    self.stable_count = None
+            if any(
+                new[k] != old[k]
+                for k in ("zones", "smooth", "conf", "reference")
+            ):
+                # Recalculate stability using the new configuration.
+                self.history.clear()
+                self.stable_count = None
+                self.candidate_count = None
+                self.candidate_since = None
                 self.last_reported = None
         save_settings()
         if not new["enabled"] and self.running:
@@ -884,7 +996,7 @@ def infer_once(st):
     frame, gen = got
     det = settings["detection"]
     with st.lock:
-        conf, roi = st.cfg["conf"], st.cfg["roi"]
+        conf, zones = st.cfg["conf"], list(st.cfg["zones"])
     H0, W0 = frame.shape[:2]
     lim = max(INFER_MIN_W, int(det.get("imgsz") or 0))
     small = cv2.resize(frame, (lim, int(H0 * lim / W0)), interpolation=cv2.INTER_AREA) if W0 > lim else frame
@@ -910,16 +1022,10 @@ def infer_once(st):
             area = max(x2 - x1, 0) * max(y2 - y1, 0) / float(W * H)
             if area < amin or area > amax:
                 continue
-            if roi:                                       # ignore detections inside THIS station's exclusion zone
+            if zones:                                     # ignore detections whose centre is inside ANY exclusion zone
                 cx = ((x1 + x2) / 2.0) / W
                 cy = ((y1 + y2) / 2.0) / H
-
-                inside_exclusion_zone = (
-                    roi[0] <= cx <= roi[2]
-                    and roi[1] <= cy <= roi[3]
-                )
-
-                if inside_exclusion_zone:
+                if any(z[0] <= cx <= z[2] and z[1] <= cy <= z[3] for z in zones):
                     continue
             raw_name = str(CLASS_NAMES.get(cid, "hex_bolt"))
             dets.append({"xyxy": (x1, y1, x2, y2), "conf": float(b.conf[0]),
@@ -942,9 +1048,14 @@ def inference_worker():
             try:
                 did |= infer_once(st)
             except Exception as e:
-                with st.lock:                              # never keep an old count that could show PASS
+                with st.lock:
+                    # Never retain a previous PASS after an inference error.
                     st.stable_count = None
                     st.history.clear()
+
+                    # Discard any result waiting for confirmation.
+                    st.candidate_count = None
+                    st.candidate_since = None
                 if time.time() - last_err > 10:
                     last_err = time.time()
                     log_event("alert", f"{st.name}: inference error: {e}")
@@ -975,6 +1086,97 @@ def _forever(fn, name):
 
 
 # ============================================================ overall result
+
+def build_plc_output():
+    """
+    Build fixed binary outputs for all four inspection channels.
+
+    Binary meaning:
+        1 = confirmed PASS
+        0 = FAIL, waiting, stopped, disabled, or camera error
+
+    ready:
+        1 only when every enabled station has a finalized PASS/FAIL result
+        0 while detection is waiting, stopped, unstable, or in error
+
+    overall:
+        1 only when ready=1 and every enabled station has passed
+        0 otherwise
+    """
+
+    views = [station.view() for station in STATIONS]
+
+    response = {
+        "ready": 0,
+        "overall": 0,
+        "system_healthy": 1,
+        "station_1": 0,
+        "station_2": 0,
+        "station_3": 0,
+        "station_4": 0,
+        "station_1_valid": 0,
+        "station_2_valid": 0,
+        "station_3_valid": 0,
+        "station_4_valid": 0,
+    }
+
+    enabled_views = []
+
+    for view in views:
+        station_id = int(view["id"])
+        output_key = f"station_{station_id}"
+        valid_key = f"station_{station_id}_valid"
+
+        enabled = bool(view["enabled"])
+        running = bool(view["running"])
+        status = str(view["status"])
+
+        # PASS/FAIL is valid only after stable inspection completion.
+        result_valid = (
+            enabled
+            and running
+            and status in ("PASS", "FAIL")
+        )
+
+        # Output 1 only for a confirmed PASS.
+        binary_output = int(
+            result_valid
+            and status == "PASS"
+        )
+
+        response[output_key] = binary_output
+        response[valid_key] = int(result_valid)
+
+        if enabled:
+            enabled_views.append(view)
+
+        # A required camera or inference problem makes the vision
+        # system unhealthy for PLC acceptance.
+        if enabled and status == "CAMERA_ERROR":
+            response["system_healthy"] = 0
+
+    # ready=1 only when at least one station is enabled and every
+    # enabled station has finalized a PASS or FAIL result.
+    response["ready"] = int(
+        bool(enabled_views)
+        and all(
+            response[f"station_{view['id']}_valid"] == 1
+            for view in enabled_views
+        )
+    )
+
+    # overall=1 only when every enabled station has passed.
+    response["overall"] = int(
+        response["ready"] == 1
+        and response["system_healthy"] == 1
+        and all(
+            response[f"station_{view['id']}"] == 1
+            for view in enabled_views
+        )
+    )
+
+    return response
+
 def compute_overall(views):
     en = [v for v in views if v["enabled"]]
     if not en:
@@ -1160,107 +1362,46 @@ def api_overall():
 
 @app.route("/api/plc-output")  # New PLC output endpoint
 def api_plc_output():
-    views = [s.view() for s in STATIONS]
-    enabled = [v for v in views if v["enabled"]]
-
-    # Ready = 1 only when every enabled station is running
-    # and has produced a valid PASS or FAIL result.
-    ready = int(
-        bool(enabled)
-        and all(
-            v["running"] and v["status"] in ("PASS", "FAIL")
-            for v in enabled
-        )
-    )
-
-    # Convert station results into binary outputs:
-    # PASS = 1
-    # FAIL or any other state = 0
-    station_outputs = {
-        f"station_{v['id']}": int(v["status"] == "PASS")
-        for v in enabled
-    }
-
-    # Overall = 1 only when the system is ready
-    # and every enabled station has passed.
-    overall = int(
-        ready == 1
-        and bool(station_outputs)
-        and all(value == 1 for value in station_outputs.values())
-    )
-
-    # Prepare the PLC response.
-    response = {
-        "ready": ready,
-        "overall": overall
-    }
-
-    response.update(station_outputs)
+    response = build_plc_output()
 
     plc_response = jsonify(response)
     plc_response.headers["Cache-Control"] = "no-store"
 
     return plc_response
-
 def plc_output_monitor():
-    """Print PLC binary outputs only when a value changes."""
+    """
+    Print PLC binary outputs only when one of the values changes.
+    """
+
     previous_output = None
 
     while not SHUTDOWN.is_set():
         try:
-            views = [s.view() for s in STATIONS]
-            enabled = [v for v in views if v["enabled"]]
+            current_output = build_plc_output()
 
-            ready = int(
-                bool(enabled)
-                and all(
-                    v["running"] and v["status"] in ("PASS", "FAIL")
-                    for v in enabled
-                )
-            )
-
-            station_outputs = {
-                f"station_{v['id']}": int(v["status"] == "PASS")
-                for v in enabled
-            }
-
-            overall = int(
-                ready == 1
-                and bool(station_outputs)
-                and all(value == 1 for value in station_outputs.values())
-            )
-
-            current_output = {
-                "ready": ready,
-                "overall": overall
-            }
-
-            current_output.update(station_outputs)
-
-            # Print only when one of the PLC values changes.
             if current_output != previous_output:
-                station_text = " | ".join(
-                    "Station {} ({}): {}".format(
-                        v["id"],
-                        v["name"],
-                        station_outputs.get("station_{}".format(v["id"]), 0)
-                    )
-                    for v in enabled
-                )
-
                 console.print(
-                    f"[bold cyan]BINARY OUTPUT[/bold cyan] | "
-                    f"Ready: [bold]{ready}[/bold] | "
-                    f"{station_text} | "
-                    f"Overall: [bold {'green' if overall == 1 else 'red'}]"
-                    f"{overall}[/bold {'green' if overall == 1 else 'red'}]",
-                    highlight=False
+                    "[bold cyan]BINARY OUTPUT[/bold cyan] | "
+                    f"CH1: [bold]{current_output['station_1']}[/bold] | "
+                    f"CH2: [bold]{current_output['station_2']}[/bold] | "
+                    f"CH3: [bold]{current_output['station_3']}[/bold] | "
+                    f"CH4: [bold]{current_output['station_4']}[/bold] | "
+                    f"READY: [bold yellow]{current_output['ready']}[/bold yellow] | "
+                    f"HEALTHY: [bold]{current_output['system_healthy']}[/bold] | "
+                    f"OVERALL: "
+                    f"[bold {'green' if current_output['overall'] else 'red'}]"
+                    f"{current_output['overall']}"
+                    f"[/bold {'green' if current_output['overall'] else 'red'}]",
+                    highlight=False,
                 )
 
-                previous_output = current_output
+                previous_output = dict(current_output)
 
-        except Exception as e:
-            log(f"PLC output monitor error: {e}", "red")
+        except Exception as exc:
+            log(
+                f"PLC output monitor error: {exc}",
+                "red",
+            )
 
         SHUTDOWN.wait(0.2)
 
